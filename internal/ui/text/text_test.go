@@ -2,17 +2,35 @@ package text
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func TestWidthIgnoresEastAsianEnv(t *testing.T) {
-	t.Setenv("RUNEWIDTH_EASTASIAN", "1")
-	t.Setenv("LANG", "ja_JP.UTF-8")
+	if cond.EastAsianWidth {
+		t.Fatal("cond.EastAsianWidth must be false")
+	}
 	if got := Width("…│─┼▸▾▤"); got != 7 {
 		t.Fatalf("Width = %d, want 7", got)
 	}
 	if got := Width("日本"); got != 4 {
 		t.Fatalf("Width(日本) = %d", got)
+	}
+	ea := runewidth.NewCondition()
+	ea.EastAsianWidth = true
+	if got := ea.StringWidth("…"); got != 2 {
+		t.Fatalf("East Asian mode Width(…) = %d, want 2 (ambiguous rune must be ambiguous)", got)
+	}
+}
+
+func TestControlCharsNeutralized(t *testing.T) {
+	if got := Fit("a\x1b[31mb", 8); strings.Contains(got, "\x1b") || Width(got) != 8 {
+		t.Fatalf("Fit = %q", got)
+	}
+	if got := Wrap("a\x1bb\nc", 5); !reflect.DeepEqual(got, []string{"a b", "c"}) {
+		t.Fatalf("Wrap = %q", got)
 	}
 }
 

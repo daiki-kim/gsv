@@ -74,6 +74,8 @@ func render(f frame) string {
 	if len(f.rows) == 0 || f.nCols == 0 {
 		return text.Block([]string{"(空のシート)"}, f.width, f.height)
 	}
+	f.leftCol = min(max(f.leftCol, 0), f.nCols-1)
+	f.topRow = min(max(f.topRow, 0), len(f.rows)-1)
 	lastCol := min(f.leftCol+g.visCols, f.nCols)
 	cursor := cursorBlurred
 	if f.focused {

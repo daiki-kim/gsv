@@ -4,6 +4,7 @@ package text
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -14,11 +15,20 @@ var cond = func() *runewidth.Condition {
 	return c
 }()
 
-var flattener = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+// controlToSpace maps every control rune (C0, DEL, C1, including ESC and tab) to a space.
+func controlToSpace(r rune) rune {
+	if unicode.IsControl(r) {
+		return ' '
+	}
+	return r
+}
 
 func Width(s string) int { return cond.StringWidth(s) }
 
-func Flatten(s string) string { return flattener.Replace(s) }
+// Flatten turns line breaks and control characters into single spaces, so no escape sequence reaches the terminal.
+func Flatten(s string) string {
+	return strings.Map(controlToSpace, strings.ReplaceAll(s, "\r\n", "\n"))
+}
 
 // Fit flattens s, truncates it with "…" and pads it to exactly w columns.
 func Fit(s string, w int) string {
@@ -47,9 +57,7 @@ func Wrap(s string, w int) []string {
 		var line strings.Builder
 		lw := 0
 		for _, r := range para {
-			if r == '\t' {
-				r = ' '
-			}
+			r = controlToSpace(r)
 			rw := cond.RuneWidth(r)
 			if lw+rw > w && lw > 0 {
 				out = append(out, line.String())

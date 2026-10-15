@@ -58,3 +58,11 @@ func TestRenderTooNarrow(t *testing.T) {
 		t.Fatalf("render = %q", got)
 	}
 }
+
+func TestRenderClampsOutOfRangeCursorAndScroll(t *testing.T) {
+	rows := [][]string{{"a", "b"}, {"c", "d"}}
+	got := render(frame{rows: rows, nCols: 2, leftCol: 5, topRow: 9, width: 40, height: 6})
+	if !strings.Contains(got, "B          │") || !strings.Contains(got, " 2│ d") {
+		t.Fatalf("render =\n%s", got)
+	}
+}
