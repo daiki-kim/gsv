@@ -160,7 +160,7 @@ func (m *Model) Apply(a keymap.Action) Effect {
 		if sel != nil && sel.IsSheet() {
 			target = sel.parent
 		}
-		if target != nil {
+		if target != nil && !target.Loading {
 			target.Expanded, target.Loading, target.Err = true, true, nil
 			return Effect{Kind: LoadChildren, Node: target}
 		}
@@ -192,10 +192,24 @@ func (m *Model) SetChildren(n *Node, items []gdrive.Item, err error) {
 		m.clamp()
 		return
 	}
+	// Keep the cursor on the same child across a reload, if it still exists.
+	sel := m.Selected()
+	selID, selIsChild := "", sel != nil && sel.parent == n
+	if selIsChild {
+		selID = sel.ID
+	}
 	n.Err, n.Loaded = nil, true
 	n.Children = make([]*Node, 0, len(items))
 	for _, it := range items {
 		n.Children = append(n.Children, &Node{ID: it.ID, Name: it.Name, Kind: it.Kind, parent: n, depth: n.depth + 1})
+	}
+	if selIsChild {
+		for _, c := range n.Children {
+			if c.ID == selID {
+				m.cursor = m.indexOf(c)
+				break
+			}
+		}
 	}
 	m.clamp()
 }
@@ -269,6 +283,9 @@ func (m *Model) clamp() {
 	if m.cursor >= m.top+h {
 		m.top = m.cursor - h + 1
 	}
+	// Never leave blank rows below the list or above the first node.
+	m.top = min(m.top, max(n-h, 0))
+	m.top = max(m.top, 0)
 }
 
 func label(n *Node) string {

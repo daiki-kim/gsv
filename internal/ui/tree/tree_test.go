@@ -151,3 +151,55 @@ func TestViewHeightAndCursor(t *testing.T) {
 		t.Fatalf("cursor must stay visible: %q", lines)
 	}
 }
+
+func TestShrinkingReloadKeepsTopInRange(t *testing.T) {
+	m := newTree()
+	m.SetSize(30, 4)
+	e := m.Apply(act(keymap.Right))
+	var kids []gdrive.Item
+	for i := 0; i < 10; i++ {
+		kids = append(kids, sheet(string(rune('a'+i)), "s"))
+	}
+	m.SetChildren(e.Node, kids, nil)
+	m.Apply(act(keymap.Bottom))
+	if m.top == 0 {
+		t.Fatal("setup: expected top > 0 after G")
+	}
+	m.SetChildren(e.Node, nil, nil)
+	lines := strings.Split(m.View(true), "\n")
+	if len(lines) != 4 || !strings.Contains(lines[1], "My Drive") {
+		t.Fatalf("view after shrink = %q", lines)
+	}
+	for _, l := range lines[1:] {
+		if strings.TrimSpace(l) == "" {
+			t.Fatalf("blank row in %q", lines)
+		}
+	}
+}
+
+func TestReloadWhileLoadingIsNoop(t *testing.T) {
+	m := newTree()
+	m.Apply(act(keymap.Open))
+	if e := m.Apply(act(keymap.Reload)); e.Kind != None {
+		t.Fatalf("r while loading must not re-request: %+v", e)
+	}
+}
+
+func TestReloadKeepsCursorOnSameChild(t *testing.T) {
+	m := newTree()
+	e := m.Apply(act(keymap.Open))
+	m.SetChildren(e.Node, []gdrive.Item{sheet("a", "A"), sheet("b", "B"), sheet("c", "C")}, nil)
+	m.Apply(act(keymap.Down))
+	m.Apply(act(keymap.Down))
+	m.Apply(act(keymap.Down))
+	if m.Selected().ID != "c" {
+		t.Fatalf("setup: selected = %+v", m.Selected())
+	}
+	if e := m.Apply(act(keymap.Reload)); e.Kind != LoadChildren {
+		t.Fatalf("effect = %+v", e)
+	}
+	m.SetChildren(e.Node, []gdrive.Item{sheet("x", "X"), sheet("a", "A"), sheet("b", "B"), sheet("c", "C")}, nil)
+	if got := m.Selected().ID; got != "c" {
+		t.Fatalf("cursor jumped: selected ID = %q", got)
+	}
+}
