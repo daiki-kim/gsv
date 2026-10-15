@@ -37,16 +37,46 @@ func TestLoadOAuthConfigInstalledApp(t *testing.T) {
 func TestSaveTokenRoundTripWith0600(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "sub", "token.json")
 	tok := &oauth2.Token{AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(time.Hour).Round(time.Second)}
-	if err := SaveToken(p, tok); err != nil {
+	if err := SaveToken(p, "cid", tok); err != nil {
 		t.Fatal(err)
 	}
 	st, _ := os.Stat(p)
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("perm = %v", st.Mode().Perm())
 	}
-	got, err := LoadToken(p)
-	if err != nil || got.AccessToken != "a" || got.RefreshToken != "r" || !got.Expiry.Equal(tok.Expiry) {
-		t.Fatalf("got = %+v, err = %v", got, err)
+	got, clientID, err := LoadToken(p)
+	if err != nil || got.AccessToken != "a" || got.RefreshToken != "r" || !got.Expiry.Equal(tok.Expiry) || clientID != "cid" {
+		t.Fatalf("got = %+v, clientID = %q, err = %v", got, clientID, err)
+	}
+}
+
+func TestTokenSourceReauthorizesWhenClientChanged(t *testing.T) {
+	srv := tokenServer(t, 200)
+	p := filepath.Join(t.TempDir(), "token.json")
+	SaveToken(p, "other-client", &oauth2.Token{AccessToken: "personal", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
+	opened := 0
+	ts, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := ts.Token()
+	saved, clientID, _ := LoadToken(p)
+	if tok.AccessToken != "new" || opened != 1 || saved.AccessToken != "new" || clientID != "cid" {
+		t.Fatalf("tok = %+v, opened = %d, saved = %+v, clientID = %q", tok, opened, saved, clientID)
+	}
+}
+
+func TestTokenSourceReauthorizesLegacyTokenWithoutClientID(t *testing.T) {
+	srv := tokenServer(t, 200)
+	p := filepath.Join(t.TempDir(), "token.json")
+	os.WriteFile(p, []byte(`{"access_token":"legacy","refresh_token":"r","expiry":"`+
+		time.Now().Add(time.Hour).Format(time.RFC3339)+`"}`), 0o600)
+	opened := 0
+	if _, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard); err != nil || opened != 1 {
+		t.Fatalf("err = %v, opened = %d", err, opened)
+	}
+	if _, clientID, _ := LoadToken(p); clientID != "cid" {
+		t.Fatalf("clientID = %q", clientID)
 	}
 }
 
@@ -152,7 +182,7 @@ func TestCallbackReportsDenial(t *testing.T) {
 func TestTokenSourceUsesValidStoredToken(t *testing.T) {
 	srv := tokenServer(t, 200)
 	p := filepath.Join(t.TempDir(), "token.json")
-	SaveToken(p, &oauth2.Token{AccessToken: "stored", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
+	SaveToken(p, "cid", &oauth2.Token{AccessToken: "stored", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
 	opened := 0
 	ts, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard)
 	if err != nil {
@@ -167,14 +197,14 @@ func TestTokenSourceUsesValidStoredToken(t *testing.T) {
 func TestTokenSourceRefreshesAndPersists(t *testing.T) {
 	srv := tokenServer(t, 200)
 	p := filepath.Join(t.TempDir(), "token.json")
-	SaveToken(p, &oauth2.Token{AccessToken: "old", RefreshToken: "r", Expiry: time.Now().Add(-time.Hour)})
+	SaveToken(p, "cid", &oauth2.Token{AccessToken: "old", RefreshToken: "r", Expiry: time.Now().Add(-time.Hour)})
 	opened := 0
 	ts, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tok, _ := ts.Token()
-	saved, _ := LoadToken(p)
+	saved, _, _ := LoadToken(p)
 	if tok.AccessToken != "refreshed" || saved.AccessToken != "refreshed" || saved.RefreshToken != "r" || opened != 0 {
 		t.Fatalf("tok = %+v, saved = %+v, opened = %d", tok, saved, opened)
 	}
@@ -183,14 +213,14 @@ func TestTokenSourceRefreshesAndPersists(t *testing.T) {
 func TestTokenSourceReauthorizesWhenRefreshRejected(t *testing.T) {
 	srv := tokenServer(t, 400)
 	p := filepath.Join(t.TempDir(), "token.json")
-	SaveToken(p, &oauth2.Token{AccessToken: "old", RefreshToken: "dead", Expiry: time.Now().Add(-time.Hour)})
+	SaveToken(p, "cid", &oauth2.Token{AccessToken: "old", RefreshToken: "dead", Expiry: time.Now().Add(-time.Hour)})
 	opened := 0
 	ts, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tok, _ := ts.Token()
-	saved, _ := LoadToken(p)
+	saved, _, _ := LoadToken(p)
 	if tok.AccessToken != "new" || saved.AccessToken != "new" || opened != 1 {
 		t.Fatalf("tok = %+v, saved = %+v, opened = %d", tok, saved, opened)
 	}
@@ -223,12 +253,12 @@ func TestAuthorizeIgnoresWrongStateCallback(t *testing.T) {
 func TestTokenSourceDoesNotReauthorizeOnServerError(t *testing.T) {
 	srv := tokenServer(t, 503)
 	p := filepath.Join(t.TempDir(), "token.json")
-	SaveToken(p, &oauth2.Token{AccessToken: "old", RefreshToken: "good", Expiry: time.Now().Add(-time.Hour)})
+	SaveToken(p, "cid", &oauth2.Token{AccessToken: "old", RefreshToken: "good", Expiry: time.Now().Add(-time.Hour)})
 	opened := 0
 	if _, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard); err == nil || opened != 0 {
 		t.Fatalf("err = %v, opened = %d", err, opened)
 	}
-	saved, _ := LoadToken(p)
+	saved, _, _ := LoadToken(p)
 	if saved.RefreshToken != "good" {
 		t.Fatalf("refresh token discarded: %+v", saved)
 	}
@@ -242,7 +272,7 @@ func TestTokenSourceReauthorizesWhenNoRefreshToken(t *testing.T) {
 	if _, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard); err != nil || opened != 1 {
 		t.Fatalf("err = %v, opened = %d", err, opened)
 	}
-	saved, _ := LoadToken(p)
+	saved, _, _ := LoadToken(p)
 	if saved.AccessToken != "new" {
 		t.Fatalf("token file not rewritten: %+v", saved)
 	}
