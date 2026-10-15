@@ -32,9 +32,16 @@ type book struct {
 	values map[string][][]string
 }
 
-type fakeSheets struct{ books map[string]book }
+type fakeSheets struct {
+	books    map[string]book
+	failOnce map[string]bool // GetTabs for these ids fails the first time
+}
 
 func (f *fakeSheets) GetTabs(_ context.Context, id string) (string, []gsheets.Tab, error) {
+	if f.failOnce[id] {
+		delete(f.failOnce, id)
+		return "", nil, errors.New("503 unavailable")
+	}
 	b, ok := f.books[id]
 	if !ok {
 		return "", nil, errors.New("404 not found")
@@ -291,5 +298,62 @@ func TestStatusNeutralizesControlChars(t *testing.T) {
 	s := statusLine(m)
 	if strings.Contains(s, "\x1b") || !strings.Contains(s, "bad") {
 		t.Fatalf("status = %q", s)
+	}
+}
+
+func u(id string) string { return "https://docs.google.com/spreadsheets/d/" + id + "/edit" }
+
+func TestStatusNeutralizesPastedNewlineAndTitles(t *testing.T) {
+	m, _ := newApp(t)
+	press(m, ":")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true,
+		Runes: []rune("e " + u("S1") + "\n")})
+	drain(m, cmd)
+	if s := statusLine(m); strings.Contains(s, "\n") {
+		t.Fatalf("status has newline: %q", s)
+	}
+	if got := len(strings.Split(m.View(), "\n")); got != 30 {
+		t.Fatalf("view has %d lines, want 30", got)
+	}
+	press(m, "enter")
+	if m.grid.SpreadsheetID() != "S1" {
+		t.Fatalf("opened %q, want S1", m.grid.SpreadsheetID())
+	}
+
+	m2, _ := newApp(t)
+	m2.deps.Sheets.(*fakeSheets).books["ESC"] = book{title: "a\x1b[2Jb", tabs: []gsheets.Tab{{Title: "T"}},
+		values: map[string][][]string{"T": {{"x"}}}}
+	typeLine(m2, ":e "+u("ESC"))
+	if s := statusLine(m2); strings.Contains(s, "\x1b") || !strings.Contains(s, "NORMAL") {
+		t.Fatalf("status = %q", s)
+	}
+}
+
+func TestRetryAfterOpenFailure(t *testing.T) {
+	m, _ := newApp(t)
+	m.deps.Sheets.(*fakeSheets).failOnce = map[string]bool{"S1": true}
+	typeLine(m, ":e "+u("S1"))
+	if !strings.Contains(m.View(), "r で再試行") {
+		t.Fatalf("no retry hint:\n%s", m.View())
+	}
+	press(m, "r")
+	if v := m.View(); !strings.Contains(v, "10/03") {
+		t.Fatalf("data not shown after retry:\n%s", v)
+	}
+}
+
+func TestDuplicateTabsMsgIgnored(t *testing.T) {
+	m, _ := newApp(t)
+	typeLine(m, ":e "+u("S1"))
+	press(m, "g", "t")
+	if m.grid.CurrentTab() != 1 {
+		t.Fatalf("tab = %d", m.grid.CurrentTab())
+	}
+	_, cmd := m.Update(tabsMsg{id: "S1", title: "売上管理", tabs: []gsheets.Tab{{Title: "Sheet1"}, {Title: "Sheet2"}}})
+	if cmd != nil {
+		t.Fatal("duplicate tabsMsg should be ignored")
+	}
+	if m.grid.CurrentTab() != 1 || !strings.Contains(m.View(), "予算") {
+		t.Fatalf("state reset:\n%s", m.View())
 	}
 }

@@ -249,8 +249,9 @@ func (m *Model) find(q string, forward bool) bool {
 	}
 	walk(m.roots)
 	start := 0
+	sel := m.Selected()
 	for i, n := range all {
-		if n == m.Selected() {
+		if n == sel {
 			start = i
 		}
 	}

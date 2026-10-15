@@ -92,3 +92,12 @@ func TestParseSpreadsheetID(t *testing.T) {
 		}
 	}
 }
+
+func TestInputPasteNeutralizesControlRunes(t *testing.T) {
+	var in Input
+	in.Start(Command)
+	in.Key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\x1bc\r"), Paste: true})
+	if _, s := in.Key(tea.KeyMsg{Type: tea.KeyEnter}); s != "ab c" {
+		t.Fatalf("s = %q", s)
+	}
+}

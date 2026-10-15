@@ -4,6 +4,7 @@ package cmdline
 import (
 	"regexp"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -54,7 +55,15 @@ func (in *Input) Key(msg tea.KeyMsg) (Result, string) {
 	case tea.KeySpace:
 		in.buf = append(in.buf, ' ')
 	case tea.KeyRunes:
-		in.buf = append(in.buf, msg.Runes...)
+		for _, r := range msg.Runes {
+			switch {
+			case r == '\r' || r == '\n':
+			case unicode.IsControl(r):
+				in.buf = append(in.buf, ' ')
+			default:
+				in.buf = append(in.buf, r)
+			}
+		}
 	}
 	return Pending, ""
 }

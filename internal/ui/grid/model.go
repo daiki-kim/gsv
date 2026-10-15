@@ -19,6 +19,7 @@ const (
 	LoadTab         // fetch values for CurrentTab()
 	Peek            // show the current cell in a popup
 	NotFound        // a repeated search found nothing
+	Reopen          // re-fetch the tab list of SpreadsheetID()
 )
 
 // LargeSheetCells is the cell count above which the caller warns the user.
@@ -60,6 +61,9 @@ func (m *Model) Open(id string) {
 }
 
 func (m *Model) SpreadsheetID() string { return m.id }
+
+// Opening reports whether the tab list is still being fetched (between Open and SetTabs/SetOpenError).
+func (m *Model) Opening() bool { return m.openLoading }
 
 func (m *Model) SetTabs(title string, tabs []gsheets.Tab) Effect {
 	m.title, m.tabs, m.tab, m.openLoading = title, tabs, 0, false
@@ -152,6 +156,9 @@ func (m *Model) Apply(a keymap.Action) Effect {
 			return Peek
 		}
 	case keymap.Reload:
+		if m.id != "" && m.openErr != nil {
+			return Reopen
+		}
 		if len(m.tabs) > 0 {
 			m.loading[m.tab] = true
 			delete(m.errs, m.tab)
@@ -279,7 +286,7 @@ func (m *Model) View(focused bool) string {
 	case m.openLoading:
 		body = text.Block([]string{"⟳ loading…"}, m.width, bodyH)
 	case m.openErr != nil:
-		body = text.Block([]string{"! 読み込み失敗: " + m.openErr.Error()}, m.width, bodyH)
+		body = text.Block([]string{"! 読み込み失敗: " + m.openErr.Error() + " (r で再試行)"}, m.width, bodyH)
 	case m.errs[m.tab] != nil:
 		body = text.Block([]string{fmt.Sprintf("! 読み込み失敗: %v (r で再試行)", m.errs[m.tab])}, m.width, bodyH)
 	case m.loading[m.tab] || (len(m.tabs) > 0 && !m.loaded(m.tab)):

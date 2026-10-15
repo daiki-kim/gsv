@@ -93,7 +93,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setErr("Drive: " + msg.err.Error())
 		}
 	case tabsMsg:
-		if msg.id != m.grid.SpreadsheetID() {
+		if msg.id != m.grid.SpreadsheetID() || !m.grid.Opening() {
 			break
 		}
 		if msg.err != nil {
@@ -283,6 +283,8 @@ func (m *Model) gridEffect(e grid.Effect) tea.Cmd {
 	switch e {
 	case grid.LoadTab:
 		return m.loadValues()
+	case grid.Reopen:
+		return m.open(m.grid.SpreadsheetID())
 	case grid.Peek:
 		if addr, v, ok := m.grid.CurrentCell(); ok {
 			m.popup = newPopup(addr, v, m.width)
@@ -361,7 +363,7 @@ func (m *Model) View() string {
 
 func (m *Model) statusLine() string {
 	if m.input.Active() {
-		return text.Truncate(m.input.View(), m.width)
+		return text.Truncate(text.Flatten(m.input.View()), m.width)
 	}
 	if m.msg != "" {
 		s := text.Truncate(text.Flatten(m.msg), m.width)
@@ -380,5 +382,5 @@ func (m *Model) statusLine() string {
 	if p := m.keys.Pending(); p != "" {
 		parts = append(parts, p)
 	}
-	return text.Truncate(strings.Join(parts, "  "), m.width)
+	return text.Truncate(text.Flatten(strings.Join(parts, "  ")), m.width)
 }

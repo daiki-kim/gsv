@@ -228,3 +228,22 @@ func TestViewBeforeOpen(t *testing.T) {
 		t.Fatal("empty grid should explain how to open a sheet")
 	}
 }
+
+func TestReloadAfterOpenErrorReopens(t *testing.T) {
+	m := New()
+	m.SetSize(60, 13)
+	m.Open("X")
+	if !m.Opening() {
+		t.Fatal("should be opening")
+	}
+	m.SetOpenError(errors.New("503"))
+	if m.Opening() {
+		t.Fatal("not opening after error")
+	}
+	if got := m.Apply(keymap.Action{Kind: keymap.Reload, Count: 1}); got != Reopen {
+		t.Fatalf("effect = %v, want Reopen", got)
+	}
+	if !strings.Contains(m.View(true), "r で再試行") {
+		t.Fatal("hint missing")
+	}
+}
