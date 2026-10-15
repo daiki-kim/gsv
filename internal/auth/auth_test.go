@@ -65,8 +65,12 @@ func tokenServer(t *testing.T, refreshStatus int) *httptest.Server {
 			w.Write([]byte(`{"access_token":"new","refresh_token":"newr","token_type":"Bearer","expires_in":3600}`))
 		case "refresh_token":
 			w.WriteHeader(refreshStatus)
-			if refreshStatus != 200 {
+			if refreshStatus == 400 {
 				w.Write([]byte(`{"error":"invalid_grant"}`))
+				return
+			}
+			if refreshStatus != 200 {
+				w.Write([]byte(`{"error":"server_error"}`))
 				return
 			}
 			w.Write([]byte(`{"access_token":"refreshed","token_type":"Bearer","expires_in":3600}`))
@@ -131,7 +135,7 @@ func TestCallbackRejectsWrongState(t *testing.T) {
 	h := callbackHandler("good", codeCh, errCh)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/callback?code=X&state=bad", nil))
-	if rec.Code != 400 || len(codeCh) != 0 || len(errCh) != 1 {
+	if rec.Code != 400 || len(codeCh) != 0 || len(errCh) != 0 {
 		t.Fatalf("code = %d, codes = %d, errs = %d", rec.Code, len(codeCh), len(errCh))
 	}
 }
@@ -204,5 +208,42 @@ func TestTokenSourceReauthorizesWhenTokenFileCorrupt(t *testing.T) {
 	b, _ := os.ReadFile(p)
 	if json.Unmarshal(b, &raw) != nil {
 		t.Fatalf("token file not rewritten: %s", b)
+	}
+}
+
+func TestAuthorizeIgnoresWrongStateCallback(t *testing.T) {
+	srv := tokenServer(t, 200)
+	opened := 0
+	tok, err := Authorize(context.Background(), testConfig(srv), browser(t, &opened, "/callback?code=X&state=bad"), io.Discard)
+	if err != nil || tok.AccessToken != "new" || opened != 1 {
+		t.Fatalf("tok = %+v, err = %v, opened = %d", tok, err, opened)
+	}
+}
+
+func TestTokenSourceDoesNotReauthorizeOnServerError(t *testing.T) {
+	srv := tokenServer(t, 503)
+	p := filepath.Join(t.TempDir(), "token.json")
+	SaveToken(p, &oauth2.Token{AccessToken: "old", RefreshToken: "good", Expiry: time.Now().Add(-time.Hour)})
+	opened := 0
+	if _, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard); err == nil || opened != 0 {
+		t.Fatalf("err = %v, opened = %d", err, opened)
+	}
+	saved, _ := LoadToken(p)
+	if saved.RefreshToken != "good" {
+		t.Fatalf("refresh token discarded: %+v", saved)
+	}
+}
+
+func TestTokenSourceReauthorizesWhenNoRefreshToken(t *testing.T) {
+	srv := tokenServer(t, 200)
+	p := filepath.Join(t.TempDir(), "token.json")
+	os.WriteFile(p, []byte("{}"), 0o600)
+	opened := 0
+	if _, err := TokenSource(context.Background(), testConfig(srv), p, browser(t, &opened), io.Discard); err != nil || opened != 1 {
+		t.Fatalf("err = %v, opened = %d", err, opened)
+	}
+	saved, _ := LoadToken(p)
+	if saved.AccessToken != "new" {
+		t.Fatalf("token file not rewritten: %+v", saved)
 	}
 }

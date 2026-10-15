@@ -126,7 +126,8 @@ func callbackHandler(state string, codeCh chan<- string, errCh chan<- error) htt
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("state") != state {
-			fail(w, errors.New("oauth: state mismatch"))
+			// A stray or forged request must not abort the flow; keep waiting for the real callback.
+			http.Error(w, "oauth: state mismatch", http.StatusBadRequest)
 			return
 		}
 		if e := q.Get("error"); e != "" {
@@ -159,7 +160,9 @@ func randomState() (string, error) {
 // unreadable or rejected by Google. Refreshed tokens are written back to tokenPath.
 func TokenSource(ctx context.Context, cfg *oauth2.Config, tokenPath string, openURL func(string) error, out io.Writer) (oauth2.TokenSource, error) {
 	tok, err := LoadToken(tokenPath)
-	if err == nil {
+	if err == nil && !tok.Valid() && tok.RefreshToken == "" {
+		fmt.Fprintln(out, "保存済みのトークンを更新できません。再認可します。")
+	} else if err == nil {
 		ts := cfg.TokenSource(ctx, tok)
 		fresh, err := ts.Token()
 		if err == nil {
@@ -171,7 +174,7 @@ func TokenSource(ctx context.Context, cfg *oauth2.Config, tokenPath string, open
 			return &persistingSource{base: ts, path: tokenPath, last: fresh.AccessToken}, nil
 		}
 		var re *oauth2.RetrieveError
-		if !errors.As(err, &re) {
+		if !errors.As(err, &re) || re.ErrorCode != "invalid_grant" {
 			return nil, err
 		}
 		fmt.Fprintln(out, "保存済みのトークンが無効になりました。再認可します。")
