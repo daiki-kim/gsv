@@ -39,20 +39,28 @@ func LoadOAuthConfig(credPath string) (*oauth2.Config, error) {
 	return google.ConfigFromJSON(b, Scopes...)
 }
 
-func LoadToken(path string) (*oauth2.Token, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var tok oauth2.Token
-	if err := json.Unmarshal(b, &tok); err != nil {
-		return nil, err
-	}
-	return &tok, nil
+// storedToken is the token.json format: the token plus the OAuth client that issued it.
+type storedToken struct {
+	oauth2.Token
+	ClientID string `json:"client_id,omitempty"`
 }
 
-// SaveToken writes tok atomically with mode 0600, creating the directory with 0700.
-func SaveToken(path string, tok *oauth2.Token) error {
+// LoadToken reads token.json and returns the token and the client ID it was issued to
+// ("" for files written before the client ID was recorded).
+func LoadToken(path string) (*oauth2.Token, string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	var st storedToken
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, "", err
+	}
+	return &st.Token, st.ClientID, nil
+}
+
+// SaveToken writes tok and the issuing clientID atomically with mode 0600, creating the directory with 0700.
+func SaveToken(path, clientID string, tok *oauth2.Token) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -66,7 +74,7 @@ func SaveToken(path string, tok *oauth2.Token) error {
 		f.Close()
 		return err
 	}
-	if err := json.NewEncoder(f).Encode(tok); err != nil {
+	if err := json.NewEncoder(f).Encode(storedToken{Token: *tok, ClientID: clientID}); err != nil {
 		f.Close()
 		return err
 	}
@@ -157,21 +165,24 @@ func randomState() (string, error) {
 
 // TokenSource returns a token source backed by tokenPath. It refreshes the stored
 // token up front and falls back to the browser flow when the token is missing,
-// unreadable or rejected by Google. Refreshed tokens are written back to tokenPath.
+// unreadable, issued to a different OAuth client, or rejected by Google.
+// Refreshed tokens are written back to tokenPath.
 func TokenSource(ctx context.Context, cfg *oauth2.Config, tokenPath string, openURL func(string) error, out io.Writer) (oauth2.TokenSource, error) {
-	tok, err := LoadToken(tokenPath)
-	if err == nil && !tok.Valid() && tok.RefreshToken == "" {
+	tok, clientID, err := LoadToken(tokenPath)
+	if err == nil && clientID != cfg.ClientID {
+		fmt.Fprintln(out, "OAuth クライアント (credentials.json) が変わりました。再認可します。")
+	} else if err == nil && !tok.Valid() && tok.RefreshToken == "" {
 		fmt.Fprintln(out, "保存済みのトークンを更新できません。再認可します。")
 	} else if err == nil {
 		ts := cfg.TokenSource(ctx, tok)
 		fresh, err := ts.Token()
 		if err == nil {
 			if fresh.AccessToken != tok.AccessToken {
-				if err := SaveToken(tokenPath, fresh); err != nil {
+				if err := SaveToken(tokenPath, cfg.ClientID, fresh); err != nil {
 					return nil, err
 				}
 			}
-			return &persistingSource{base: ts, path: tokenPath, last: fresh.AccessToken}, nil
+			return &persistingSource{base: ts, path: tokenPath, clientID: cfg.ClientID, last: fresh.AccessToken}, nil
 		}
 		var re *oauth2.RetrieveError
 		if !errors.As(err, &re) || re.ErrorCode != "invalid_grant" {
@@ -185,17 +196,18 @@ func TokenSource(ctx context.Context, cfg *oauth2.Config, tokenPath string, open
 	if err != nil {
 		return nil, err
 	}
-	if err := SaveToken(tokenPath, tok); err != nil {
+	if err := SaveToken(tokenPath, cfg.ClientID, tok); err != nil {
 		return nil, err
 	}
-	return &persistingSource{base: cfg.TokenSource(ctx, tok), path: tokenPath, last: tok.AccessToken}, nil
+	return &persistingSource{base: cfg.TokenSource(ctx, tok), path: tokenPath, clientID: cfg.ClientID, last: tok.AccessToken}, nil
 }
 
 type persistingSource struct {
-	base oauth2.TokenSource
-	path string
-	mu   sync.Mutex
-	last string
+	base     oauth2.TokenSource
+	path     string
+	clientID string
+	mu       sync.Mutex
+	last     string
 }
 
 func (s *persistingSource) Token() (*oauth2.Token, error) {
@@ -207,7 +219,7 @@ func (s *persistingSource) Token() (*oauth2.Token, error) {
 	defer s.mu.Unlock()
 	if tok.AccessToken != s.last {
 		s.last = tok.AccessToken
-		_ = SaveToken(s.path, tok) // a failed write only costs a refresh next launch
+		_ = SaveToken(s.path, s.clientID, tok) // a failed write only costs a refresh next launch
 	}
 	return tok, nil
 }
